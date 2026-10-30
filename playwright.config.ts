@@ -3,7 +3,7 @@ export default defineConfig({
   testDir: "./e2e",
   workers: 1,
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: process.env.TEST_BASE_URL || "http://localhost:3000",
     headless: true,
     launchOptions: {
       executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",

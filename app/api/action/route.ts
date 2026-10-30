@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hash } from "@/lib/auth";
+import { query } from "@/lib/db";
 import { transaction } from "@/lib/db";
 import { execute } from "@/lib/service";
 export const runtime = "nodejs";
@@ -23,7 +25,7 @@ export async function POST(request: NextRequest) {
     const input = JSON.parse(text);
     if (!input || typeof input.action !== "string")
       throw new Error("Invalid action.");
-    if (["create", "join"].includes(input.action)) {
+    if (["create", "join", "quickSubmit"].includes(input.action)) {
       const key = request.headers.get("x-forwarded-for") || "local";
       const now = Date.now();
       if (attempts.size > 10000)
@@ -40,6 +42,22 @@ export async function POST(request: NextRequest) {
           ? { ...entry, count: entry.count + 1 }
           : { count: 1, until: now + 3600000 },
       );
+    }
+    if (input.action === "quickSubmit") {
+      const key = hash(
+        `code-submit:${request.headers.get("x-forwarded-for") || "local"}`,
+      );
+      const counter = (
+        await query(
+          "INSERT INTO submission_limits(key,attempts,resets_at) VALUES($1,1,now()+interval '1 hour') ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN submission_limits.resets_at<now() THEN 1 ELSE submission_limits.attempts+1 END,resets_at=CASE WHEN submission_limits.resets_at<now() THEN now()+interval '1 hour' ELSE submission_limits.resets_at END RETURNING attempts",
+          [key],
+        )
+      )[0];
+      if (counter.attempts > 30)
+        return NextResponse.json(
+          { error: "Too many code submissions. Try again later." },
+          { status: 429 },
+        );
     }
     return NextResponse.json(await transaction(() => execute(input)));
   } catch (error) {

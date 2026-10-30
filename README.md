@@ -18,12 +18,13 @@ The signed-out homepage is a read-only demonstration using explicitly marked sam
 
 ## Primary workflow
 
-1. Create a private group, choose the season, and enter your name. Week 1 of Top 25 opens automatically.
-2. In Group settings, generate a private invitation and share it securely. Generating another invitation invalidates previous links; existing members keep access.
-3. Friends follow the link and choose names. Each gets a random, persistent, HTTP-only browser session. Names do not authenticate returning users.
-4. Select a format. Build a ballot using search, conference filters, drag handles, accessible arrows, direct rank entry, or **Fill remaining alphabetically**. Bulk filling is an explicit user action, never an automatic ballot change. Save partial drafts or submit exactly the required number of unique teams.
-5. The commissioner sets a deadline, sees submission status, closes voting, then publishes. Draft contents and unpublished individual ballots are private. Final ballots remain editable until the deadline or close. Saving a submitted ballot as a draft removes it from aggregation until resubmitted.
-6. View consensus, first-place votes, movement, high/low ranks, agreement, individual published ballots, history and CSV export. Unpublishing returns results to closed voting.
+1. Open **National polls** for AP, Coaches and CFP releases, with overall record and conference record in parentheses. Source, season, week, release timestamp and last check are visible. **Friends poll** is the adjacent comparison tab.
+2. Click **Build your ballot**. No account or group is required before ranking. Search, filter, drag, use arrows, jump directly to a position, or explicitly fill remaining teams alphabetically. Signed-out drafts save on the browser.
+3. Submit the required unique teams and enter a name and private group code. An existing code joins that group; a new code creates a private group. A new code group uses live consensus from submitted final ballots. A copyable code appears immediately for private sharing. Codes use 5–40 letters/numbers/hyphens; longer codes are more private than five digits.
+4. A name is not an authentication credential. The server gives each browser a random HTTP-only member identity. Another browser cannot overwrite an existing member merely by entering the same name and group code. Keep the original browser to edit. Membership cookies preserve access when moving between groups.
+5. New code groups show submitted ballots and live consensus to members, refreshing every 30 seconds. Existing groups keep their current privacy/publication behavior until a commissioner explicitly enables live results. Normal manual groups still support drafts, deadlines, close, publish and unpublish.
+6. Commissioners can set/change a code, choose live or manual results, configure deadlines and independent formats, and customize the group name, accent color, and classic/scoreboard/newsprint theme. Standard invitation links remain supported for existing members.
+7. Compare group ranks against AP/Coaches/CFP, voter high/low spreads, first-place diversity, entries/exits, individual ballots and agreement. CSV export and season history remain available.
 
 AP scoring is N points for rank 1 through 1 point for rank N (N=25 for AP Top 25). Equal points are marked `T`; first-place votes, then English alphabetical team names break ties deterministically. Unranked teams receive zero points and rank N+1 for disagreement statistics. Only active members' final ballots count when publication is created. Published snapshots remain intact after later removals. Published results require unpublishing before changing voting status.
 
@@ -59,13 +60,17 @@ NCAA and Wikipedia source requests returned HTTP 403 in this environment. No cur
 
 The example illustrates the schema; supply the **complete verified field**, not the single example entry. Import metadata is an attestation by the commissioner, not automated verification of the URL. Team IDs must stay stable across seasons. Do not import sports data you lack permission to use.
 
-### Statistics adapter
+### National feed and statistics adapter
 
-The Data center searches the full loaded directory, sorts all numeric columns and team names, lets voters choose columns, and compares published group ranks with imported external metrics. Every available metric displays source, season, week, unit and last update. “Latest” uses each metric's latest source week; different source weeks are explicitly displayed. Missing values sort last and remain unavailable.
+`GET /api/national` reads fixed public ESPN JSON endpoints for national polls, standings/records and FBS teams. It does not scrape web pages, embed unlicensed logos, or need a paid API key. Rank and record facts are attributed with source links. The client automatically checks every five minutes; server fetches are cached for five minutes. This is periodic refresh of publisher releases, not a promise of second-by-second changes. Team records display **overall W–L (conference W–L)**; missing fields stay `—`. A previous-season feed is rejected, and an unknown current-season release remains unavailable. The BCS is labeled historical: its final season was 2013. No current BCS ranking is fabricated.
 
-Supported keys: `ap`, `coaches`, `cfp`, `fpi`, `sos`, `sor`, `offense`, `defense`, `scoringOffense`, `scoringDefense`, `passingOffense`, `passingDefense`, `rushingOffense`, `rushingDefense`, `turnovers`, `offensiveEfficiency`, `defensiveEfficiency`, `wins`, `losses`, `conferenceWins`, `conferenceLosses`. Imported conference wins/losses support a sortable conference standings view through those columns. No live sports adapter or API credentials are bundled. ESPN proprietary metrics remain unavailable unless a licensed snapshot is supplied; group Borda rank is the clearly labeled alternative ranking, not an imitation of FPI or SOR.
+The public JSON endpoints are an external dependency without an application SLA. Their response shapes and access may change; provider errors fail to an unavailable state while private ballots still work. Poll dates and provider season are validated. Source-provided conference names are used where available. A full team directory is only marked verified and cached when the provider explicitly reports the matching season and a complete unique FBS field; manual season directory imports are preserved.
 
-Commissioner JSON import:
+The cloud workspace currently returns HTTP 403 for ESPN and the public Vercel site. Live source access could not be verified here. The adapter's parsers, source metadata, stale-season rejection, missing-data handling, and UI are validated with clearly synthetic test fixtures. Verify `/api/national` from the deployed site to confirm available polls and records. An HTTP 200 with poll status `unavailable` is an operational data-source failure, not successful live-data validation.
+
+The Data center includes automatic AP/Coaches/CFP rankings and sourced overall/conference W–L metrics when a provider week is known. Other customizable metrics accept licensed JSON snapshots: `fpi`, `sos`, `sor`, `offense`, `defense`, `scoringOffense`, `scoringDefense`, `passingOffense`, `passingDefense`, `rushingOffense`, `rushingDefense`, `turnovers`, `offensiveEfficiency`, `defensiveEfficiency`, `wins`, `losses`, `conferenceWins`, `conferenceLosses`. Each available metric shows source, season, week, unit and update/check timestamp. Proprietary metrics remain unavailable without an authorized dataset.
+
+Commissioner JSON import (schema example, **not factual sports data**):
 
 ```json
 {
@@ -79,7 +84,7 @@ Commissioner JSON import:
 }
 ```
 
-This is a format example, **not factual sports data**. Only import actual source values and timestamps. The adapter imports JSON snapshots without making arbitrary server-side URL requests. It does not require a secret. A future live provider should bind its credentials securely on the server and honor provider licensing, quotas, cache and attribution requirements.
+Only import actual values, timestamps and licensed/source-permitted content. The import adapter does not make arbitrary server-side URL requests. Any future authenticated provider must keep credentials server-side and respect its licensing, quotas and attribution.
 
 ### Team museums and optional gamification
 
@@ -104,9 +109,9 @@ Categories: `identity`, `stadium`, `history`, `people`, `memorabilia`. Media ope
 
 ## Database & security
 
-`migrations/001_initial.sql` establishes groups, members, independent weeks, ballots and immutable-at-publication snapshots. `002_expansion.sql` additively introduces settings, season directories, metric snapshots, exhibits and larger fields. Both scripts are idempotent. Existing groups, ballots and published data are preserved. Application writes are transactional. Week mutations lock the week row; ballot SQL also checks open status and deadline at write time. The browser cannot write another member's ballot. Session and invitation tokens are 256-bit random values stored as SHA-256 hashes; raw tokens do not enter database records. Session cookies are HTTP-only, SameSite Lax, 180 days, and Secure in production. Cross-origin mutations are rejected. Creation/join rate limiting is process-local.
+`migrations/001_initial.sql` establishes groups, members, independent weeks, ballots and immutable-at-publication snapshots. `002_expansion.sql` additively introduces settings, season directories, metric snapshots, exhibits and larger fields. The migrations are additive and idempotent. `003_code_groups.sql` adds hashed group codes, explicit live-consensus settings, group appearance, and persistent submission rate limits. Existing groups, ballots and published data are preserved. Application writes are transactional. Week mutations lock the week row; ballot SQL also checks open status and deadline at write time. The browser cannot write another member's ballot. Session and invitation tokens are 256-bit random values stored as SHA-256 hashes; raw tokens do not enter database records. Session cookies are HTTP-only, SameSite Lax, 180 days, and Secure in production. Cross-origin mutations are rejected. Creation/join rate limiting is process-local. Name/code submissions additionally use a database-backed per-address rate limit, preserving failed-attempt counters outside the ballot transaction.
 
-**Operational limitations:** no password/account recovery or cross-device identity transfer yet. Clearing cookies loses that browser identity; rejoining creates a new member, not an identity claim by name. Commissioners should remove abandoned identities. Invitation holders can join until the link is rotated. In-process rate limits need a shared store before scaling. Reference datasets and curated exhibits are shared installation-wide; only private group data and ballots are group-scoped. Never enter private information into globally shared exhibit text or sports snapshots.
+**Operational limitations:** no password/account recovery or cross-device identity transfer yet. Clearing cookies loses that browser identity; rejoining creates a new member, not an identity claim by name. Commissioners should remove abandoned identities. Invitation/code holders can join until the link or code is rotated. Rotate the shared code to prevent a removed person from rejoining. Standard invitation/create limits need a shared store before scaling; code-submission limits already use PostgreSQL. Reference datasets and curated exhibits are shared installation-wide; only private group data and ballots are group-scoped. Never enter private information into globally shared exhibit text or sports snapshots.
 
 ## Validation
 
@@ -140,4 +145,4 @@ See [REQUIREMENTS.md](REQUIREMENTS.md) for the implementation audit and remainin
 
 Deployment from this cloud machine currently needs Vercel authentication and network access to `api.vercel.com`, `vercel.com`, and `auth.vercel.com`. The CLI is installed in the workspace npm cache and its writable global config location is `/workspace/.deployment-tools/vercel`. No account is authenticated. The saved environment draft declares `VERCEL_TOKEN` for secure entry and includes the required Vercel domains; it must be reviewed/saved and published before those settings are active. Do not put tokens or database connection strings in chat or source files. A production database URL belongs in Vercel's secure project environment settings.
 
-No public deployment has been created or verified.
+The user confirmed the initial site works at https://top25-pied.vercel.app. Publication of subsequent changes is tracked through GitHub; this workspace cannot independently read the protected Vercel build logs.

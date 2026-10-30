@@ -8,7 +8,9 @@ const scope = new AsyncLocalStorage<DB>();
 const globalDb = globalThis as unknown as { pollDb?: Promise<PGlite | Pool> };
 export function db(): Promise<PGlite | Pool> {
   if (process.env.VERCEL && !process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is required on Vercel; local database storage is not persistent.");
+    throw new Error(
+      "DATABASE_URL is required on Vercel; local database storage is not persistent.",
+    );
   }
   return (globalDb.pollDb ??= (async () => {
     const localPath =
@@ -18,7 +20,11 @@ export function db(): Promise<PGlite | Pool> {
     const database = process.env.DATABASE_URL
       ? new Pool({ connectionString: process.env.DATABASE_URL })
       : new PGlite(localPath);
-    for (const file of ["001_initial.sql", "002_expansion.sql"]) {
+    for (const file of [
+      "001_initial.sql",
+      "002_expansion.sql",
+      "003_code_groups.sql",
+    ]) {
       const schema = await readFile(
         join(process.cwd(), "migrations", file),
         "utf8",

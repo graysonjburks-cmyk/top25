@@ -21,3 +21,7 @@ The repository began empty. Before the expanded brief, the initial implementatio
 | Account recovery / cross-device identity                               | Remaining improvement; browser sessions currently persist 180 days                                                              |
 
 External blockers: authoritative membership and historical sources returned HTTP 403 under the current runtime network policy. A network-settings draft includes NCAA/Wikipedia destinations; saving a draft did not activate it. Paid/proprietary metrics require authorized source data. Existing product data is never replaced as part of setup. Local validation uses a disposable database separate from the default app database.
+
+## Latest additions
+
+Rank-first, name-and-code submission; database-backed code attempt limits; multi-group browser identities; opt-in live consensus for existing groups; immediate live consensus for newly created code groups; group colors/themes; adjacent national/friends tabs; current-season validation and source timestamps; overall (conference) records; source comparisons and voter dispersion analytics. Existing accounts, invitations, ballots, group publication settings, and historical snapshots are retained.

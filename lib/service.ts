@@ -3,6 +3,8 @@ import { identity, id, token, hash, setSession } from "./auth";
 import { aggregate, validateBallot, requireCommissioner } from "./scoring";
 import { formats, selectField, makeBracket } from "./formats";
 import { directory, sourceUrl, metricDefinitions } from "./data";
+import { quickSubmit } from "./quick-submit";
+import { codeHash } from "./group-codes";
 import { teamById } from "./teams";
 function name(value: unknown, max = 60) {
   if (typeof value !== "string" || !value.trim() || value.trim().length > max)
@@ -10,6 +12,7 @@ function name(value: unknown, max = 60) {
   return value.trim();
 }
 export async function execute(input: any) {
+  if (input.action === "quickSubmit") return quickSubmit(input);
   if (input.action === "create") {
     const groupName = name(input.group),
       memberName = name(input.name, 40),
@@ -45,7 +48,7 @@ export async function execute(input: any) {
         }),
       ],
     );
-    await setSession(secret);
+    await setSession(secret, group);
     return { invite };
   }
   if (input.action === "join") {
@@ -64,16 +67,56 @@ export async function execute(input: any) {
       "INSERT INTO members(id,group_id,name,role,session_hash) VALUES($1,$2,$3,'member',$4)",
       [id(), group.id, memberName, hash(secret)],
     );
-    await setSession(secret);
+    await setSession(secret, group.id);
     return {};
   }
   if (input.action === "logout") {
-    const current=await identity();if(current)await query("UPDATE members SET session_hash=$1 WHERE id=$2",[hash(token()),current.id]);
+    const current = await identity();
+    if (current)
+      await query("UPDATE members SET session_hash=$1 WHERE id=$2", [
+        hash(token()),
+        current.id,
+      ]);
     await setSession("");
     return {};
   }
   const member = await identity();
   if (!member) throw new Error("Join or create a group first.");
+  if (input.action === "groupCode") {
+    requireCommissioner(member.role);
+    const code = codeHash(input.code);
+    const other = (
+      await query("SELECT id FROM groups WHERE code_hash=$1 AND id<>$2", [
+        code,
+        member.group_id,
+      ])
+    )[0];
+    if (other)
+      throw new Error("That group code is already in use. Choose another.");
+    await query("UPDATE groups SET code_hash=$1,auto_results=$2 WHERE id=$3", [
+      code,
+      !!input.live,
+      member.group_id,
+    ]);
+    return {};
+  }
+  if (input.action === "appearance") {
+    requireCommissioner(member.role);
+    const title = name(input.group);
+    const accent =
+      typeof input.accent === "string" && /^#[a-fA-F0-9]{6}$/.test(input.accent)
+        ? input.accent
+        : "#244c3b";
+    const theme = ["classic", "scoreboard", "newsprint"].includes(input.theme)
+      ? input.theme
+      : "classic";
+    await query("UPDATE groups SET name=$1,appearance=$2::jsonb WHERE id=$3", [
+      title,
+      JSON.stringify({ accent, theme }),
+      member.group_id,
+    ]);
+    return {};
+  }
   if (input.action === "invite") {
     requireCommissioner(member.role);
     const invite = token();
@@ -369,9 +412,10 @@ export async function loadState() {
   const member = await identity();
   if (!member) return null;
   const group = (
-    await query("SELECT id,name,season FROM groups WHERE id=$1", [
-      member.group_id,
-    ])
+    await query(
+      "SELECT id,name,season,auto_results,appearance,(code_hash IS NOT NULL) AS has_code FROM groups WHERE id=$1",
+      [member.group_id],
+    )
   )[0];
   const members = await query(
     "SELECT id,name,role FROM members WHERE group_id=$1 AND active=true ORDER BY role,name",
@@ -399,7 +443,33 @@ export async function loadState() {
     [group.season],
   );
   const exhibits = await query("SELECT * FROM team_exhibits ORDER BY title");
+  const liveResults = [];
+  if (group.auto_results) {
+    for (const week of weeks.filter((w) => w.status !== "published")) {
+      const finals = await query(
+        "SELECT b.teams,m.id,m.name FROM ballots b JOIN members m ON m.id=b.member_id WHERE b.week_id=$1 AND b.submitted=true AND m.active=true ORDER BY m.name,m.id",
+        [week.id],
+      );
+      if (finals.length) {
+        const allowed = new Map<string, any>(
+          (week.config?.teams || dir.teams).map((t: any) => [t.id, t]),
+        );
+        liveResults.push({
+          week_id: week.id,
+          results: aggregate(
+            finals.map((b) => b.teams),
+            week.size,
+            allowed,
+          ),
+          ballots: finals,
+          live: true,
+          published_at: null,
+        });
+      }
+    }
+  }
   return {
+    liveResults,
     directory: dir,
     metrics,
     exhibits,

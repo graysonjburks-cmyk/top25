@@ -13,3 +13,11 @@ Validated in this cloud machine with Node.js 24.19.0 and npm 11.9.0.
 No live sports API, authoritative season verification, licensed historical/media collection, hosted PostgreSQL provider or public deployment was validated. NCAA/Wikipedia source requests returned HTTP 403. Full-field/conference functionality was tested with explicitly synthetic import fixtures, not claimed as verified sports data. Museum content panels correctly show unavailable/awaiting-content states when no sourced exhibits exist.
 
 The environment draft stores tested installation and startup instructions. Draft persistence was confirmed; environment publication and validation in a newly restored task have not occurred. Source files remain reviewable in the repository working directory and have not been pushed.
+
+## National comparison and code-submission update
+
+- 14 domain tests pass, including provider season/date validation, stale-feed rejection, record parsing, team aliases, hashed code normalization, and live metric attribution.
+- 14 integration checks pass, including all original group/ballot/publication checks, quick group creation and joining, live Borda aggregation, same-name impersonation rejection, repeated ballot replacement without duplication, role-controlled themes, and sign-out revocation. Browser cookies preserve multiple group memberships.
+- Two updated Chromium tests pass: national/friends tabs with record formatting and historical BCS treatment; mobile ranking before identity, local drafts, name/code submission, live consensus, code sharing, and appearance changes.
+- The browser and parser sports fixtures are explicitly synthetic, sourced to `example.invalid`, and never inserted as real national data.
+- Actual `/api/national` in the cloud returned HTTP 200 with zero available polls and provider-unavailable errors. HTTP 403 prevents direct access to ESPN and the production domain from this workspace. Current-week rankings/records have **not** been verified live here; missing data is shown as unavailable, never replaced with fixtures.

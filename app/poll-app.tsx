@@ -29,9 +29,18 @@ import {
   TeamMuseum,
   Preferences,
 } from "./extended";
+import {
+  NationalBoard,
+  RecordLabel,
+  ComparisonAnalytics,
+  CodeSettings,
+} from "./competition";
+import { liveMetrics } from "@/lib/live-metrics";
+import type { NationalData } from "@/lib/national-types";
 import { formats } from "@/lib/formats";
 import { aggregate, agreement } from "@/lib/scoring";
 type View =
+  | "national"
   | "rankings"
   | "ballot"
   | "voters"
@@ -87,16 +96,50 @@ function Badge({ id, small = false }: { id: string; small?: boolean }) {
 }
 export default function PollApp({ state: initialState }: { state: any }) {
   const [state, setState] = useState(initialState);
+  const [national, setNational] = useState<NationalData | null>(null),
+    [feedLoading, setFeedLoading] = useState(true),
+    [sharedCode, setSharedCode] = useState("");
+  async function refreshNational() {
+    setFeedLoading(true);
+    try {
+      const response = await fetch("/api/national", { cache: "no-store" });
+      if (response.ok) setNational(await response.json());
+    } catch {
+    } finally {
+      setFeedLoading(false);
+    }
+  }
+  useEffect(() => {
+    refreshNational();
+    const interval = setInterval(refreshNational, 300000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (!state?.group.id) return;
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        if (response.ok) setState(await response.json());
+      } catch {}
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [state?.group.id]);
   const [activeMode, setActiveMode] = useState("top25"),
     [museum, setMuseum] = useState<string | null>(null),
     [gamification, setGamification] = useState(false),
     [sound, setSound] = useState(false);
-  const teams: Team[] = state?.directory.teams || Array.from(teamById.values());
+  const teams: Team[] =
+    state?.directory.teams ||
+    (national?.directoryVerified
+      ? national.teams
+      : Array.from(teamById.values()));
   const localTeams = new Map<string, any>(
     [
       ...Array.from(teamById.values()),
       ...(state?.weeks.flatMap((w: any) => w.config?.teams || []) || []),
       ...teams,
+      ...(national?.teams || []),
     ].map((t: any) => [t.id, t]),
   );
   useEffect(() => {
@@ -105,8 +148,8 @@ export default function PollApp({ state: initialState }: { state: any }) {
     setGamification(localStorage.getItem("poll-gamification") === "true");
     return () => window.removeEventListener("team-museum", listener);
   }, []);
-  const [view, setView] = useState<View>("rankings"),
-    [modal, setModal] = useState<"create" | "join" | null>(null),
+  const [view, setView] = useState<View>("national"),
+    [modal, setModal] = useState<"create" | "join" | "submit" | null>(null),
     [invite, setInvite] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
@@ -178,11 +221,31 @@ export default function PollApp({ state: initialState }: { state: any }) {
   const eligibleTeams: Team[] = week?.config?.teams || teams;
   const own = state?.own.find((b: any) => b.week_id === week?.id);
   useEffect(() => {
-    setBallot(own?.teams || []);
-  }, [week?.id, own?.updated_at]);
-  const publication = state?.publications.find(
-    (p: any) => p.week_id === week?.id,
-  );
+    let saved: string[] = [];
+    try {
+      const value = JSON.parse(
+        localStorage.getItem(`saturday-draft-${activeMode}`) || "[]",
+      );
+      if (Array.isArray(value))
+        saved = value
+          .filter((id: any) => typeof id === "string" && localTeams.has(id))
+          .slice(0, size);
+    } catch {}
+    setBallot(own?.teams || saved);
+  }, [week?.id, own?.updated_at, activeMode]);
+  function setDraft(value: string[]) {
+    setBallot(value);
+    localStorage.setItem(`saturday-draft-${activeMode}`, JSON.stringify(value));
+  }
+  function recordFor(id: string) {
+    return !state || state.group.season === national?.season
+      ? national?.records[id]
+      : undefined;
+  }
+
+  const publication =
+    state?.publications.find((p: any) => p.week_id === week?.id) ||
+    state?.liveResults?.find((p: any) => p.week_id === week?.id);
   const demoBallots = sampleBallots.map((b) =>
     (activeMode === "conference"
       ? [...b, ...teams.map((t) => t.id)].filter(
@@ -246,9 +309,19 @@ export default function PollApp({ state: initialState }: { state: any }) {
             ? "The official poll is published."
             : "Changes saved.",
       );
+      if (action === "quickSubmit") {
+        setSharedCode(String(data.code).trim().toUpperCase());
+        setModal(null);
+        setSelectedWeek(result.week);
+        setView("rankings");
+        setNotice(
+          `Ballot submitted to ${result.group}. ${result.live ? "Your friends’ live consensus is updated." : "Your commissioner will publish the results."}`,
+        );
+      }
       if (action === "logout") setView("rankings");
       if (action === "create" || action === "join") {
-        setActiveMode("top25");setSelectedWeek("");
+        setActiveMode("top25");
+        setSelectedWeek("");
         setModal(null);
         history.replaceState(null, "", "/");
         setView("ballot");
@@ -264,10 +337,6 @@ export default function PollApp({ state: initialState }: { state: any }) {
     }
   }
   function openBallot() {
-    if (demo) {
-      setModal("create");
-      return;
-    }
     setView("ballot");
   }
   function move(from: number, to: number) {
@@ -275,7 +344,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
     const next = [...ballot];
     const [item] = next.splice(from, 1);
     next.splice(to, 0, item);
-    setBallot(next);
+    setDraft(next);
   }
   function exportResults() {
     const rows = [
@@ -300,14 +369,21 @@ export default function PollApp({ state: initialState }: { state: any }) {
   }
   const isCommissioner = member?.role === "commissioner";
   return (
-    <>
+    <div
+      className={`poll-shell theme-${state?.group.appearance?.theme || "classic"}`}
+      style={
+        {
+          "--green": state?.group.appearance?.accent || "#244c3b",
+        } as React.CSSProperties
+      }
+    >
       <header className="masthead">
         <div
           className="brand"
-          onClick={() => setView("rankings")}
+          onClick={() => setView("national")}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => e.key === "Enter" && setView("rankings")}
+          onKeyDown={(e) => e.key === "Enter" && setView("national")}
         >
           <span className="brand-emblem">
             S<span>★</span>P
@@ -322,7 +398,8 @@ export default function PollApp({ state: initialState }: { state: any }) {
         <nav aria-label="Main navigation">
           {(
             [
-              ["rankings", "The Top 25"],
+              ["national", "National polls"],
+              ["rankings", "Friends poll"],
               ["ballot", "My ballot"],
               ["voters", "The voters"],
               ["history", "Poll archive"],
@@ -334,33 +411,41 @@ export default function PollApp({ state: initialState }: { state: any }) {
               key={key}
               className={view === key ? "nav-active" : ""}
               onClick={() =>
-                key === "ballot"
-                  ? openBallot()
-                  : key === "cfp"
-                    ? (setActiveMode(
-                        activeMode.startsWith("cfp") ? activeMode : "cfp12",
-                      ),
-                      setView("cfp"))
-                    : setView(key)
+                key === "national"
+                  ? (setActiveMode("top25"),
+                    setSelectedWeek(""),
+                    setView("national"))
+                  : key === "ballot"
+                    ? openBallot()
+                    : key === "cfp"
+                      ? (setActiveMode(
+                          activeMode.startsWith("cfp") ? activeMode : "cfp12",
+                        ),
+                        setView("cfp"))
+                      : setView(key)
               }
             >
               {label}
-              {key === "cfp" && <span className="new-tag">CFP</span>}
+              {key === "cfp" && (
+                <span className="new-tag" aria-hidden="true">
+                  CFP
+                </span>
+              )}
             </button>
           ))}
         </nav>
         <button
           className="group-pill"
-          onClick={() => (demo ? setModal("create") : setView("settings"))}
+          onClick={() => (demo ? openBallot() : setView("settings"))}
         >
           <span className="group-icon">
             <Users size={16} />
           </span>
           <span>
-            {state?.group.name || "The Saturday Club"}
+            {state?.group.name || "Your friends poll"}
             <small>
               {demo
-                ? "Sample private group"
+                ? "Rank first · name + code"
                 : `${members.length} members · Private group`}
             </small>
           </span>
@@ -370,7 +455,8 @@ export default function PollApp({ state: initialState }: { state: any }) {
       <div className="season-bar">
         <span>
           <span className="live-dot" />
-          {state?.group.season || "SAMPLE SEASON"} COLLEGE FOOTBALL
+          {state?.group.season || national?.season || "COLLEGE"} COLLEGE
+          FOOTBALL
         </span>
         <span>INDEPENDENT OPINIONS. ONE OFFICIAL POLL.</span>
         <span>
@@ -379,7 +465,8 @@ export default function PollApp({ state: initialState }: { state: any }) {
       </div>
       <main>
         <div className="breadcrumb">
-          {state?.group.name.toUpperCase()||"THE SATURDAY CLUB"} <ChevronRight size={12} />
+          {state?.group.name.toUpperCase() || "THE SATURDAY CLUB"}{" "}
+          <ChevronRight size={12} />
           {view === "ballot"
             ? "YOUR BALLOT"
             : view === "cfp"
@@ -401,7 +488,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                     : "COLLEGE FOOTBALL, BY YOUR PEOPLE"}
             </div>
             <h1>
-              {view === "rankings"
+              {view === "rankings" || view === "national"
                 ? "Every Saturday."
                 : view === "ballot"
                   ? "Trust your gut."
@@ -414,7 +501,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                         : view === "cfp"
                           ? `The final ${size}.`
                           : "Your league. Your rules."}
-              {view === "rankings" && (
+              {(view === "rankings" || view === "national") && (
                 <>
                   <br />
                   <em>A new pecking order.</em>
@@ -422,26 +509,29 @@ export default function PollApp({ state: initialState }: { state: any }) {
               )}
             </h1>
             <p>
-              {view === "rankings"
-                ? `${demo ? "Five" : members.length} friends. ${size} teams. Absolutely no shortage of opinions.`
-                : view === "ballot"
-                  ? `Build your ${size}. Make it official. Defend it in the group chat.`
-                  : view === "cfp"
-                    ? "A separate ballot. A different kind of debate."
-                    : view === "voters"
-                      ? "Different loyalties. One shared Saturday tradition."
-                      : view === "history"
-                        ? "Every rise, every fall, every “I told you so.”"
-                        : "Keep the competition fair and the invitations private."}
+              {view === "national"
+                ? "The national rankings. Your friends’ opinions. One Saturday tradition."
+                : view === "rankings"
+                  ? `${demo ? "Five" : members.length} friends. ${size} teams. Absolutely no shortage of opinions.`
+                  : view === "ballot"
+                    ? `Build your ${size}. Make it official. Defend it in the group chat.`
+                    : view === "cfp"
+                      ? "A separate ballot. A different kind of debate."
+                      : view === "voters"
+                        ? "Different loyalties. One shared Saturday tradition."
+                        : view === "history"
+                          ? "Every rise, every fall, every “I told you so.”"
+                          : "Keep the competition fair and the invitations private."}
             </p>
           </div>
           <div className="heading-action">
-            {demo && (
-              <span className="sample-label">
-                SAMPLE DATA · NOT LIVE RANKINGS
-              </span>
-            )}
-            {view === "rankings" && (
+            {demo &&
+              ["rankings", "voters", "history", "cfp"].includes(view) && (
+                <span className="sample-label">
+                  SAMPLE DATA · NOT LIVE RANKINGS
+                </span>
+              )}
+            {(view === "rankings" || view === "national") && (
               <button className="primary" onClick={openBallot}>
                 Build your ballot <ArrowUpRight size={17} />
               </button>
@@ -456,15 +546,51 @@ export default function PollApp({ state: initialState }: { state: any }) {
             )}
           </div>
         </section>
-        <FormatPicker
-          value={activeMode}
-          onChange={(v) => {
-            setActiveMode(v);
-            setSelectedWeek("");
-            if (view === "cfp" && !v.startsWith("cfp")) setView("rankings");
-          }}
-        />
-        {!demo && !state.directory.verified && (
+        {(view === "national" || view === "rankings") && (
+          <div
+            className="comparison-tabs"
+            role="tablist"
+            aria-label="National and friends polls"
+          >
+            <button
+              role="tab"
+              aria-selected={view === "national"}
+              onClick={() => {
+                setActiveMode("top25");
+                setSelectedWeek("");
+                setView("national");
+              }}
+            >
+              National polls <span>THE PUBLISHED STANDARD</span>
+            </button>
+            <button
+              role="tab"
+              aria-selected={view === "rankings"}
+              onClick={() => setView("rankings")}
+            >
+              Friends poll{" "}
+              <span>{state?.group.name || "YOUR GROUP. YOUR SAY."}</span>
+            </button>
+          </div>
+        )}
+        {view !== "national" && (
+          <FormatPicker
+            value={activeMode}
+            onChange={(v) => {
+              setActiveMode(v);
+              setSelectedWeek("");
+              if (view === "cfp" && !v.startsWith("cfp")) setView("rankings");
+            }}
+          />
+        )}
+        {view === "ballot" && demo && !national?.directoryVerified && (
+          <div className="directory-notice">
+            Team selection uses the offline reference directory while
+            current-season membership verification is unavailable. Records and
+            national polls appear only when supplied by a current-season source.
+          </div>
+        )}
+        {view !== "national" && !demo && !state.directory.verified && (
           <div className="directory-notice">
             Using an unverified {state.directory.season} reference directory for
             a {state.group.season} group. Full-field and conference polls
@@ -485,6 +611,44 @@ export default function PollApp({ state: initialState }: { state: any }) {
             {notice}
           </div>
         )}
+        {sharedCode && view === "rankings" && (
+          <div className="group-ticket">
+            <div>
+              <span className="eyebrow">YOUR FRIENDS’ POLL IS OPEN</span>
+              <strong>{state?.group.name}</strong>
+              <p>
+                Tell friends to build their ballot, enter their name, and use
+                this code.
+              </p>
+            </div>
+            <button
+              aria-label="Copy private group code"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(sharedCode);
+                  setNotice(
+                    "Group code copied. Share it privately with your friends.",
+                  );
+                } catch {
+                  setError("Select and copy the displayed code.");
+                }
+              }}
+            >
+              <span>{sharedCode}</span>
+              <Copy size={17} />
+            </button>
+          </div>
+        )}
+        {view === "national" && (
+          <NationalBoard
+            data={national}
+            results={demo ? [] : results}
+            teamMap={localTeams}
+            onRank={openBallot}
+            refresh={refreshNational}
+            loading={feedLoading}
+          />
+        )}
         {view === "rankings" && (
           <>
             <div className="poll-toolbar">
@@ -500,7 +664,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                   {demo || publication ? (
                     <>
                       <span />
-                      PUBLISHED
+                      {publication?.live ? "LIVE CONSENSUS" : "PUBLISHED"}
                     </>
                   ) : week?.status === "open" ? (
                     "VOTING OPEN"
@@ -538,7 +702,12 @@ export default function PollApp({ state: initialState }: { state: any }) {
                 <div className="table-caption">
                   <span>
                     {state?.group.name || "The Saturday Club"}{" "}
-                    <span className="muted">/ Official consensus rankings</span>
+                    <span className="muted">
+                      /{" "}
+                      {publication?.live
+                        ? "Live consensus · final ballots"
+                        : "Official consensus rankings"}
+                    </span>
                   </span>
                   <span>{submissions} BALLOTS CAST</span>
                 </div>
@@ -576,6 +745,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                                     {t.name}
                                     <small>{t.conference}</small>
                                   </span>
+                                  <RecordLabel record={recordFor(r.id)} />
                                   {i === 0 && (
                                     <span className="number-one">
                                       <Trophy size={12} />
@@ -749,6 +919,19 @@ export default function PollApp({ state: initialState }: { state: any }) {
             </div>
           </>
         )}
+        {view === "rankings" && (
+          <ComparisonAnalytics
+            results={results}
+            ballots={publishedBallots}
+            previous={previous}
+            data={
+              !state || state.group.season === national?.season
+                ? national
+                : null
+            }
+            teamMap={localTeams}
+          />
+        )}
         {view === "ballot" && (
           <section className="builder-layout">
             <div className="ballot-list">
@@ -769,7 +952,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                 <button
                   className="text-button"
                   onClick={() =>
-                    setBallot(
+                    setDraft(
                       [
                         ...ballot,
                         ...[...eligibleTeams]
@@ -784,7 +967,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                 >
                   Fill remaining alphabetically
                 </button>
-                <button className="text-button" onClick={() => setBallot([])}>
+                <button className="text-button" onClick={() => setDraft([])}>
                   Clear ballot
                 </button>
                 <label>
@@ -819,6 +1002,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                   <b>{i + 1}</b>
                   <Badge id={id} small />
                   <strong>{localTeams.get(id)?.name}</strong>
+                  <RecordLabel record={recordFor(id)} />
                   <div className="reorder">
                     <input
                       type="number"
@@ -848,7 +1032,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                     </button>
                     <button
                       aria-label={`Remove ${localTeams.get(id)?.name}`}
-                      onClick={() => setBallot(ballot.filter((t) => t !== id))}
+                      onClick={() => setDraft(ballot.filter((t) => t !== id))}
                     >
                       <X size={15} />
                     </button>
@@ -865,10 +1049,13 @@ export default function PollApp({ state: initialState }: { state: any }) {
               <div className="ballot-actions">
                 <button
                   className="secondary"
-                  disabled={busy || week?.status !== "open"}
-                  onClick={() =>
-                    act("ballot", { teams: ballot, submit: false })
-                  }
+                  disabled={busy || (!demo && week?.status !== "open")}
+                  onClick={() => {
+                    if (demo) {
+                      setDraft(ballot);
+                      setNotice("Draft saved on this browser.");
+                    } else act("ballot", { teams: ballot, submit: false });
+                  }}
                 >
                   Save draft
                 </button>
@@ -876,10 +1063,14 @@ export default function PollApp({ state: initialState }: { state: any }) {
                   className="primary"
                   disabled={
                     busy ||
-                    ballot.length !== week?.size ||
-                    week?.status !== "open"
+                    ballot.length !== size ||
+                    (!demo && week?.status !== "open")
                   }
-                  onClick={() => act("ballot", { teams: ballot, submit: true })}
+                  onClick={() =>
+                    demo
+                      ? setModal("submit")
+                      : act("ballot", { teams: ballot, submit: true })
+                  }
                 >
                   Submit final ballot <Check size={16} />
                 </button>
@@ -887,7 +1078,9 @@ export default function PollApp({ state: initialState }: { state: any }) {
               <p className="fine-print">
                 {week
                   ? `Voting ${week.status} · Deadline ${new Date(week.deadline).toLocaleString()}`
-                  : "The commissioner needs to open a poll."}{" "}
+                  : demo
+                    ? "Rank first. Submit with your name and private group code."
+                    : "The commissioner needs to open a poll."}{" "}
                 · Your session is your identity. Keep access to this browser.
               </p>
             </div>
@@ -931,7 +1124,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                       key={t.id}
                       disabled={ballot.includes(t.id) || ballot.length >= size}
                       onClick={() => {
-                        setBallot([...ballot, t.id]);
+                        setDraft([...ballot, t.id]);
                         if (sound) {
                           const audio = new AudioContext();
                           const tone = audio.createOscillator(),
@@ -954,6 +1147,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                       <span>
                         <strong>{t.name}</strong>
                         <small>{t.conference}</small>
+                        <RecordLabel record={recordFor(t.id)} />
                       </span>
                       {ballot.includes(t.id) ? (
                         <Check size={17} />
@@ -1058,6 +1252,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
                           <b>{i + 1}</b>
                           <Badge id={id} small />
                           <strong>{localTeams.get(id)?.name}</strong>
+                          <RecordLabel record={recordFor(id)} />
                           <small>
                             High {r?.high} / Low {r?.low > size ? "NR" : r?.low}
                           </small>
@@ -1189,7 +1384,20 @@ export default function PollApp({ state: initialState }: { state: any }) {
           </section>
         )}
         {view === "data" && (
-          <DataHub state={state} results={results} teams={teams} />
+          <DataHub
+            state={{
+              ...state,
+              group: state?.group || { season: national?.season || 2026 },
+              metrics: [
+                ...(state?.metrics || []),
+                ...liveMetrics(national).filter(
+                  (m) => !state || m.season === state.group.season,
+                ),
+              ],
+            }}
+            results={demo ? [] : results}
+            teams={teams}
+          />
         )}
         {view === "settings" && !demo && (
           <div className="settings-grid">
@@ -1205,6 +1413,7 @@ export default function PollApp({ state: initialState }: { state: any }) {
               </p>
               {isCommissioner && (
                 <>
+                  <CodeSettings act={act} busy={busy} state={state} />
                   <h3>Private invitations</h3>
                   <p>
                     Generate a new link to invite friends. This invalidates
@@ -1362,7 +1571,104 @@ export default function PollApp({ state: initialState }: { state: any }) {
         <p>For the love of the game. And the argument.</p>
         <span>PRIVATE POLLS. PUBLIC-LEVEL PASSION.</span>
       </footer>
-      {modal && (
+      {modal === "submit" && (
+        <div className="modal-backdrop" onClick={() => setModal(null)}>
+          <section
+            className="modal submit-ticket"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="submit-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="close-modal"
+              aria-label="Close submission"
+              onClick={() => setModal(null)}
+            >
+              <X size={20} />
+            </button>
+            <span className="eyebrow">
+              YOUR BALLOT. YOUR NAME. YOUR PEOPLE.
+            </span>
+            <h2 id="submit-title">Put it on the record.</h2>
+            <div className="ticket-summary">
+              <Check size={17} />
+              {ballot.length} teams ranked · {format.name}
+            </div>
+            <p>
+              No sign-up. No QR code. Enter your name and the code your friends
+              are using.
+            </p>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const values = Object.fromEntries(
+                  new FormData(e.currentTarget),
+                );
+                await act("quickSubmit", {
+                  ...values,
+                  teams: ballot,
+                  mode: activeMode,
+                });
+              }}
+            >
+              <label className="field-label">
+                Your name
+                <input
+                  name="name"
+                  required
+                  maxLength={40}
+                  defaultValue={member?.name || ""}
+                  placeholder="John"
+                  autoComplete="given-name"
+                />
+              </label>
+              <label className="field-label">
+                Private group code
+                <input
+                  name="code"
+                  required
+                  minLength={5}
+                  maxLength={40}
+                  pattern="[A-Za-z0-9-]{5,40}"
+                  placeholder="Your shared group code"
+                  autoComplete="off"
+                />
+              </label>
+              <details>
+                <summary>Starting a new group?</summary>
+                <label className="field-label">
+                  New group name (optional)
+                  <input
+                    name="group"
+                    maxLength={60}
+                    placeholder="The Saturday Club"
+                  />
+                </label>
+              </details>
+              <p className="fine-print">
+                An existing code adds your ballot to that group. A new code
+                creates a private group with live results. Anyone with the code
+                can join; longer codes are more private. Keep this browser to
+                edit your ballot securely.
+              </p>
+              <button
+                className="primary"
+                disabled={busy || ballot.length !== size}
+              >
+                {busy ? "Submitting…" : "Submit to friends poll"}
+                <ArrowRight size={16} />
+              </button>
+            </form>
+            {error && (
+              <p className="danger" role="alert">
+                {error}
+              </p>
+            )}
+          </section>
+        </div>
+      )}
+      {modal && modal !== "submit" && (
         <div className="modal-backdrop" onClick={() => setModal(null)}>
           <section
             className="modal"
@@ -1483,6 +1789,6 @@ export default function PollApp({ state: initialState }: { state: any }) {
           collecting={gamification}
         />
       )}
-    </>
+    </div>
   );
 }

@@ -13,8 +13,21 @@ class Client {
       },
       body: JSON.stringify({ action, ...data }),
     });
-    const cookie = r.headers.get("set-cookie");
-    if (cookie) this.cookie = cookie.split(";")[0];
+    const jar = new Map(
+      this.cookie
+        .split("; ")
+        .filter(Boolean)
+        .map((pair) => {
+          const i = pair.indexOf("=");
+          return [pair.slice(0, i), pair.slice(i + 1)];
+        }),
+    );
+    for (const cookie of r.headers.getSetCookie()) {
+      const pair = cookie.split(";")[0],
+        i = pair.indexOf("=");
+      jar.set(pair.slice(0, i), pair.slice(i + 1));
+    }
+    this.cookie = [...jar].map(([key, value]) => `${key}=${value}`).join("; ");
     const body = await r.json();
     assert.equal(r.status, status, JSON.stringify(body));
     return body;
@@ -123,7 +136,8 @@ async function main() {
   s = await commissioner.state();
   assert.equal(s.publications.length, 4);
   pass("four independent formats persist ballots and publications");
-  if (!s.directory.verified) await commissioner.act("newWeek", { mode: "full" }, 400);
+  if (!s.directory.verified)
+    await commissioner.act("newWeek", { mode: "full" }, 400);
   await commissioner.act("directoryImport", {
     data: {
       season: 2025,
@@ -180,10 +194,61 @@ async function main() {
   });
   assert.equal(csrf.status, 403);
   pass("cross-site mutations rejected");
-  const oldCookie=other.cookie;
+  const quick = new Client(),
+    second = new Client(),
+    impostor = new Client();
+  const code = `SMOKE-${Date.now()}`;
+  await quick.act("quickSubmit", { name: "John", code, teams: sampleOrder });
+  let quickState = await quick.state();
+  assert.equal(quickState.group.auto_results, true);
+  assert.equal(quickState.liveResults[0].ballots.length, 1);
+  assert.ok(!("code_hash" in quickState.group));
+  await second.act("quickSubmit", {
+    name: "Alex",
+    code,
+    teams: [...sampleOrder].reverse(),
+  });
+  quickState = await quick.state();
+  assert.equal(quickState.liveResults[0].ballots.length, 2);
+  assert.ok(
+    quickState.liveResults[0].results.every((r: any) => r.points === 26),
+  );
+  await impostor.act(
+    "quickSubmit",
+    { name: "John", code, teams: sampleOrder },
+    400,
+  );
+  await quick.act("quickSubmit", {
+    name: "John",
+    code,
+    teams: [...sampleOrder].reverse(),
+  });
+  assert.equal((await quick.state()).members.length, 2);
+  pass(
+    "name-and-code ballots create/join a live private group without allowing name impersonation",
+  );
+  await quick.act("appearance", {
+    group: "The Rivalry Room",
+    accent: "#881122",
+    theme: "newsprint",
+  });
+  assert.equal((await quick.state()).group.appearance.theme, "newsprint");
+  await second.act("appearance", { group: "Not allowed" }, 400);
+  await quick.act("quickSubmit", {
+    name: "John",
+    code: `OTHER-${Date.now()}`,
+    teams: sampleOrder,
+  });
+  await quick.act("quickSubmit", { name: "John", code, teams: sampleOrder });
+  assert.equal((await quick.state()).group.name, "The Rivalry Room");
+  assert.equal((await quick.state()).members.length, 2);
+  pass("group customization persists and remains commissioner-controlled");
+  const oldCookie = other.cookie;
   await other.act("logout");
-  const revoked=await fetch(base+"/api/state",{headers:{Cookie:oldCookie}});
-  assert.equal(revoked.status,401);
+  const revoked = await fetch(base + "/api/state", {
+    headers: { Cookie: oldCookie },
+  });
+  assert.equal(revoked.status, 401);
   pass("sign-out revokes the previous session on the server");
   console.log(`${checks} integration checks passed.`);
 }
